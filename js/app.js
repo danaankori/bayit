@@ -4,7 +4,8 @@
 import * as db from './store.js';
 import * as L from './logic.js';
 import { CATS, guessCategory } from './categories.js';
-import { parseReceiptText, looksLikeLink } from './receiptText.js';
+import { parseReceiptText, looksLikeLink, parseScannedTexts, receiptFromDraft } from './receiptText.js';
+import { readImages } from './ocr.js';
 
 const app = document.getElementById('app');
 
@@ -355,6 +356,14 @@ function renderShop() {
 function renderReceipts() {
   const r = ui.receipt;
   if (r.step === 'review') return renderReview();
+  if (r.step === 'scanning') {
+    return `${head('קבלה מצילום', 'קורא את הקבלה…')}<div class="wrap"><div class="card" style="gap:12px">
+      <span>${esc(r.scan.label || 'מתחיל')}</span>
+      <div style="height:8px;border-radius:999px;background:#E6E9E4;overflow:hidden"><div style="height:8px;background:var(--green);width:${Math.round((r.scan.f || 0) * 100)}%"></div></div>
+      <span class="tiny muted">הכול נעשה בטלפון. זה יכול לקחת כמה שניות לכל תמונה.</span>
+    </div></div>`;
+  }
+  if (r.step === 'edit') return renderScanEdit();
   if (r.step === 'done') {
     const s = r.summary;
     return `${head('ייבוא קבלה', 'הקנייה נשמרה')}<div class="wrap"><div class="card" style="align-items:center;text-align:center;padding:22px 18px">
@@ -387,12 +396,54 @@ function renderReceipts() {
       ${r.error ? `<div class="banner warn" role="alert">${esc(r.error)}</div>` : ''}
       <p class="tiny muted">נתמכות כרגע קבלות דיגיטליות של רמי לוי. הקריאה נעשית בטלפון, ונשמרים רק המוצרים, הכמויות, המחירים, הסניף והתאריך.</p>
     </div>
+    <div class="card bordered">
+      <h2 style="font-size:17px">קבלה מודפסת או צילומי מסך</h2>
+      <p class="small muted">מצלמים את הקבלה (אפשר כמה תמונות לקבלה ארוכה) או בוחרים צילומי מסך של קבלה דיגיטלית. הקריאה נעשית בטלפון, ואחריה בודקים ומתקנים את השורות.</p>
+      <div class="row-actions">
+        <label class="btn primary" style="flex:1;cursor:pointer">צילום קבלה<input type="file" accept="image/*" capture="environment" data-in="receiptPhotos" class="sr"></label>
+        <label class="btn" style="flex:1;cursor:pointer">בחירת תמונות<input type="file" accept="image/*" multiple data-in="receiptPhotos" class="sr"></label>
+      </div>
+      <p class="tiny muted">הקריאה מתמונה פחות מדויקת מהעתקת טקסט: כדאי לצלם ישר, באור טוב, וכל הקבלה בתוך התמונה.</p>
+    </div>
     <section class="group"><h2>קניות קודמות</h2>
       ${hist.length ? `<div class="list-card">${hist.map(h => `<div class="row"><div class="grow"><span class="name">${esc(L.storeById(h.store).name)}${h.branch ? ' · ' + esc(h.branch) : ''}</span>
         <span class="meta"><span>${fmtDate(h.date)}</span><span>${h.lines.filter(l => !l.ignore).length} פריטים</span><span>${h.kind === 'manual' ? 'בלי קבלה' : ''}</span></span></div>
         <span style="font-weight:600">${h.total != null ? money(h.total) : ''}</span></div>`).join('')}</div>` : '<p class="empty">עוד אין קניות שמורות.</p>'}
     </section>
   </div>`;
+}
+
+function renderScanEdit() {
+  const r = ui.receipt;
+  const dr = r.draft;
+  const chains = L.stores().map(s => ({ id: s.chain || s.id, name: s.name, color: s.color }));
+  const sum = dr.lines.reduce((s, l) => s + (Number(l.paid) || 0), 0);
+  const off = dr.total != null && Math.abs(sum - dr.total) > 0.05;
+  return `${head('נקרא מהצילום · כדאי לבדוק', 'בדיקת השורות')}
+  <div class="wrap">
+    <div class="card soft" style="padding:10px 12px">
+      <span class="small muted">מאיזו חנות הקבלה?</span>
+      <div class="wrap-chips">${chains.map(c => `<button class="chip ${dr.chain === c.id ? 'on' : ''}" aria-pressed="${dr.chain === c.id}" data-a="scanChain" data-id="${esc(c.id)}">${esc(c.name)}</button>`).join('')}</div>
+      <label class="lbl" for="scanDate" style="margin:6px 0 0">תאריך הקנייה</label>
+      <input id="scanDate" type="date" class="field" data-in="scanDate" value="${esc(dr.date)}" style="max-width:200px">
+    </div>
+    <div class="banner ${off ? 'warn' : ''}" role="status"><span>סכום השורות ${money(sum)}${dr.total != null ? ` · בקבלה ${money(dr.total)}` : ''}${off ? '. משהו לא נקרא נכון: כדאי לבדוק מחירים חסרים או כפולים.' : ''}</span></div>
+    <p class="tiny muted" style="margin:0 4px">מתקנים שם, כמות או סכום ששולם (אחרי הנחה). שורה מיותרת מוחקים ב-×.</p>
+    <div class="list-card">${dr.lines.map((l, i) => `<div class="row" style="flex-wrap:wrap;gap:6px;padding:8px 10px">
+      <label class="sr" for="sn${i}">שם</label><input id="sn${i}" class="field" style="flex:1 1 100%;height:40px" data-in="scanName" data-k="${i}" value="${esc(l.name)}">
+      <label class="tiny muted" for="sq${i}">${l.weight ? 'ק״ג' : 'כמות'}</label><input id="sq${i}" class="field" style="width:70px;height:38px" inputmode="decimal" data-in="scanQty" data-k="${i}" value="${esc(l.weight || l.qty)}">
+      <label class="tiny muted" for="sp${i}">שולם ₪</label><input id="sp${i}" class="field" style="width:90px;height:38px" inputmode="decimal" data-in="scanPaid" data-k="${i}" value="${esc(l.paid)}">
+      ${l.discount ? `<span class="tiny muted">הנחה ${money(l.discount)}</span>` : ''}
+      <span style="flex:1"></span>
+      <button class="icon-btn plain" data-a="scanRemove" data-k="${i}" aria-label="מחיקת השורה ${esc(l.name)}">${I.x}</button>
+    </div>`).join('')}</div>
+    <button class="btn" data-a="scanAddLine">${I.plus} הוספת שורה</button>
+    ${r.error ? `<div class="banner warn" role="alert">${esc(r.error)}</div>` : ''}
+    <details><summary class="tiny muted" style="cursor:pointer">הטקסט שזוהה בצילום</summary><pre class="tiny muted" style="white-space:pre-wrap;direction:rtl">${esc(r.ocrText || '')}</pre></details>
+    <button class="btn link" data-a="receiptReset">ביטול</button>
+    <div class="spacer-cta"></div>
+  </div>
+  <div class="footer-cta"><button class="cta center" data-a="scanContinue">המשך להשוואה עם הרשימה</button></div>`;
 }
 
 function syncText() {
@@ -410,7 +461,7 @@ function renderReview() {
   const store = L.storeById(m.storeId);
   const other = otherStoreId(m.storeId);
   const pending = m.confirm.filter(c => !d.confirm[c.line.idx]).length + m.unknown.filter(u => !d.unknown[u.line.idx]).length;
-  const unknownCards = m.unknown.concat(m.confirm.filter(c => d.confirm[c.line.idx] === 'no').map(c => ({ line: c.line, cat: guessCategory(c.line.name) || 'שונות' })));
+  const unknownCards = m.unknown.concat(m.confirm.filter(c => d.confirm[c.line.idx] === 'no').map(c => L.unknownLine(c.line)));
   return `${head('קבלה מ-' + fmtDate(rc.date), 'מה נקנה לעומת הרשימה')}
   <div class="wrap">
     <div class="card" style="background:${store.color};color:#fff">
@@ -433,11 +484,19 @@ function renderReview() {
       <span><b>${esc(L.productName(it.productId))}</b> <span class="small muted">${qtyLabel(it)}</span></span>
       <span class="small muted">שכחתם, או שלא היה במלאי?</span>
       ${decisionButtons('missing', it.id, [['keep', 'להשאיר ברשימה']].concat(other ? [['move', 'להעביר ' + esc(pre("ל", L.storeById(other).name))]] : []).concat([['drop', 'לא צריך']]), d.missing[it.id] || 'keep')}</div>`).join('')}</section>` : ''}
-    ${unknownCards.length ? `<section class="group"><h2>מוצרים חדשים שלא בקטלוג</h2>${unknownCards.map(u => { const cur = d.unknown[u.line.idx] || {}; return `<div class="card">
+    ${unknownCards.length ? `<section class="group"><h2>מוצרים שלא זוהו</h2>${unknownCards.map(u => {
+      const cur = d.unknown[u.line.idx] || {};
+      const target = cur.target || u.target;
+      return `<div class="card">
       <span><b>${esc(u.line.name)}</b> <span class="small muted">· ${money(u.line.gross - (u.line.discount || 0))}</span></span>
-      ${cur.action === 'add' ? `<label class="lbl" for="un${u.line.idx}">שם בקטלוג</label><input id="un${u.line.idx}" class="field" data-in="unknownName" data-k="${u.line.idx}" value="${esc(cur.name != null ? cur.name : u.line.name)}">
-        <label class="lbl" for="uc${u.line.idx}">קטגוריה</label><select id="uc${u.line.idx}" class="field" data-in="unknownCat" data-k="${u.line.idx}">${CATS.map(c => `<option ${c === (cur.cat || u.cat) ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : `<span class="small muted">קטגוריה מוצעת: ${esc(u.cat)}</span>`}
-      ${decisionButtons('unknown', u.line.idx, [['add', 'להוסיף לקטלוג'], ['once', 'חד־פעמי']], cur.action)}</div>`; }).join('')}</section>` : ''}
+      <label class="lbl" for="ut${u.line.idx}" style="margin:0">זה מוצר מהקטלוג, או מוצר חדש?</label>
+      <select id="ut${u.line.idx}" class="field" data-in="unknownTarget" data-k="${u.line.idx}">
+        ${(u.cands || []).map(c => `<option value="${c.id}" ${target === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+        <option value="new" ${target === 'new' ? 'selected' : ''}>מוצר חדש</option>
+      </select>
+      ${target === 'new' && cur.action === 'add' ? `<label class="lbl" for="un${u.line.idx}">שם בקטלוג</label><input id="un${u.line.idx}" class="field" data-in="unknownName" data-k="${u.line.idx}" value="${esc(cur.name != null ? cur.name : u.line.name)}">
+        <label class="lbl" for="uc${u.line.idx}">קטגוריה</label><select id="uc${u.line.idx}" class="field" data-in="unknownCat" data-k="${u.line.idx}">${CATS.map(c => `<option ${c === (cur.cat || u.cat) ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
+      ${decisionButtons('unknown', u.line.idx, [['add', target === 'new' ? 'להוסיף לקטלוג' : 'כן, לקשר למוצר'], ['once', 'חד־פעמי']], cur.action)}</div>`; }).join('')}</section>` : ''}
     ${m.extraKnown.length ? `<p class="tiny muted" style="margin:0 4px">עוד ${m.extraKnown.length} מוצרים בקבלה כבר בקטלוג ולא היו ברשימה. הם נשמרים בהיסטוריה עם המחיר ששולם.</p>` : ''}
     <div class="spacer-cta"></div>
   </div>
@@ -727,6 +786,44 @@ const A = {
     r.showMatched = false;
     scrollTo(0, 0);
   },
+  async scan(files) {
+    const r = ui.receipt;
+    r.step = 'scanning';
+    r.scan = { f: 0, label: 'מכין את התמונות' };
+    r.error = '';
+    render();
+    try {
+      const texts = await readImages(files, (f, label) => { r.scan = { f, label }; render(); });
+      r.ocrText = texts.join('\n\n— — —\n\n');
+      const draft = parseScannedTexts(texts);
+      if (!draft.lines.length) throw new Error('לא הצלחתי לזהות שורות של מוצרים בתמונה. אפשר לנסות שוב באור טוב יותר, או להוסיף שורות ידנית.');
+      r.draft = draft;
+      r.step = 'edit';
+    } catch (e) {
+      r.step = 'paste';
+      r.error = e.message || 'הקריאה נכשלה';
+    }
+    scrollTo(0, 0);
+    render();
+  },
+  scanChain(d) { ui.receipt.draft.chain = d.id; ui.receipt.error = ''; },
+  scanRemove(d) { ui.receipt.draft.lines.splice(Number(d.k), 1); },
+  scanAddLine() { ui.receipt.draft.lines.push({ name: '', code: '', qty: 1, weight: null, paid: 0, discount: 0 }); },
+  scanContinue() {
+    const r = ui.receipt;
+    const dr = r.draft;
+    if (!dr.chain) { r.error = 'צריך לבחור מאיזו חנות הקבלה.'; return; }
+    const receipt = receiptFromDraft(dr, dr.chain);
+    if (!receipt.lines.length) { r.error = 'אין שורות לשמירה.'; return; }
+    if (L.receiptExists(receipt)) { r.error = 'נראה שהקבלה הזו כבר יובאה (אותו תאריך ואותו סכום).'; return; }
+    r.model = L.reconcile(receipt);
+    r.warnings = [];
+    r.dec = { confirm: {}, unknown: {}, missing: {} };
+    r.error = '';
+    r.step = 'review';
+    r.showMatched = false;
+    scrollTo(0, 0);
+  },
   toggleMatched() { ui.receipt.showMatched = !ui.receipt.showMatched; },
   decide(d) {
     const dec = ui.receipt.dec;
@@ -817,6 +914,16 @@ const INPUTS = {
   newStore: v => { ui.newStore = v; },
   unknownName: (v, el) => { const dec = ui.receipt.dec.unknown; dec[el.dataset.k] = { ...(dec[el.dataset.k] || {}), name: v }; },
   unknownCat: (v, el) => { const dec = ui.receipt.dec.unknown; dec[el.dataset.k] = { ...(dec[el.dataset.k] || {}), cat: v }; },
+  receiptPhotos: (v, el) => { const files = [...(el.files || [])]; if (files.length) A.scan(files); },
+  scanDate: v => { ui.receipt.draft.date = v; },
+  scanName: (v, el) => { ui.receipt.draft.lines[el.dataset.k].name = v; },
+  scanQty: (v, el) => {
+    const l = ui.receipt.draft.lines[el.dataset.k];
+    const n = parseFloat(String(v).replace(',', '.'));
+    if (l.weight) l.weight = n || l.weight; else l.qty = n || 1;
+  },
+  scanPaid: (v, el) => { ui.receipt.draft.lines[el.dataset.k].paid = parseFloat(String(v).replace(',', '.')) || 0; },
+  unknownTarget: (v, el) => { const dec = ui.receipt.dec.unknown; dec[el.dataset.k] = { ...(dec[el.dataset.k] || {}), target: v }; },
   importFile: (v, el) => {
     const f = el.files && el.files[0];
     if (!f) return;
@@ -837,6 +944,8 @@ document.addEventListener('click', e => {
 
 function onInput(e) {
   const el = e.target;
+  // File pickers fire both "input" and "change"; handle them once.
+  if (el.type === 'file' && e.type !== 'change') return;
   const fn = el.dataset && INPUTS[el.dataset.in];
   if (!fn) return;
   fn(el.value, el);
@@ -865,6 +974,6 @@ render();
 db.connect();
 
 // Lets screens be checked on a local test server without a real receipt.
-if (location.hostname === 'localhost') window.__bayit = { ui, render, L, db };
+if (location.hostname === 'localhost') window.__bayit = { ui, render, L, db, A };
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

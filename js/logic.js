@@ -56,7 +56,9 @@ export function defaultStoreFor(cat) {
 export function addStore(name) {
   const order = stores().length;
   const palette = ['#5B6660', '#6A4C93', '#2D6A4F', '#8C5E1A', '#3D5A80'];
-  return db.put('stores', { id: db.uid('s'), name, chain: '', color: palette[order % palette.length], active: true, order, route: null });
+  const id = db.uid('s');
+  // A store added by hand is its own "chain", so photographed receipts can be filed under it.
+  return db.put('stores', { id, name, chain: id, color: palette[order % palette.length], active: true, order, route: null });
 }
 
 export function moveRoute(storeId, index, delta) {
@@ -218,7 +220,9 @@ export function finishShopping(storeId) {
 
 // ---------- receipts ----------
 
-function codeKey(code, storeId) {
+function codeKey(code, storeId, name) {
+  // Lines without a code (photographed paper receipts) are remembered by the store's name for them.
+  if (!code) return storeId + ':name:' + looseKey(name);
   // Short codes are chain-internal (weighed produce); barcodes are global.
   return String(code).length < 8 ? storeId + ':' + code : String(code);
 }
@@ -240,11 +244,22 @@ function similar(a, b) {
 
 export function matchLines(lines, storeId) {
   return lines.map((l, idx) => {
-    const key = codeKey(l.code, storeId);
+    const key = codeKey(l.code, storeId, l.name);
     const ignore = isNonProduct(l.name);
     const p = ignore ? null : productByCode(key);
     return { idx, ...l, key, ignore, productId: p ? p.id : null };
   });
+}
+
+// A receipt line not in the catalog yet: suggest catalog products with a similar name.
+export function unknownLine(line) {
+  const cands = matchProducts(line.name);
+  return {
+    line,
+    cat: guessCategory(line.name) || 'שונות',
+    cands: cands.map(c => ({ id: c.p.id, name: c.p.name })),
+    target: cands[0] && cands[0].score >= 0.6 ? cands[0].p.id : 'new'
+  };
 }
 
 // Compares a fetched receipt with the open list and returns what needs a decision.
@@ -275,12 +290,20 @@ export function reconcile(receipt) {
   }
   for (const l of lines) {
     if (l.ignore || l.productId) continue;
-    const cand = openItems.find(i => !used.has(i.id) && !(db.one('products', i.productId) || {}).codes?.length && similar(l.name, productName(i.productId)));
+    // With a barcode, only list products that have no barcode yet can be the match.
+    // Without one (a photographed receipt), take the list product whose name fits best.
+    const cand = l.code
+      ? openItems.find(i => !used.has(i.id) && !(db.one('products', i.productId) || {}).codes?.length && similar(l.name, productName(i.productId)))
+      : openItems.filter(i => !used.has(i.id))
+        .map(i => ({ i, score: matchScore(l.name, productName(i.productId)) }))
+        .filter(x => x.score >= 0.5)
+        .sort((a, b) => b.score - a.score)
+        .map(x => x.i)[0];
     if (cand) {
       used.add(cand.id);
       confirm.push({ line: l, item: cand });
     } else {
-      unknown.push({ line: l, cat: guessCategory(l.name) || 'שונות' });
+      unknown.push(unknownLine(l));
     }
   }
   const missing = openItems.filter(i => i.store === storeId && !used.has(i.id));
@@ -305,12 +328,19 @@ export function applyReconcile(model, decisions) {
         summary.bought++;
         summary.linked++;
       } else {
-        model.unknown.push({ line, cat: guessCategory(line.name) || 'שונות' });
+        model.unknown.push(unknownLine(line));
       }
     }
     for (const u of model.unknown) {
       const d = decisions.unknown[u.line.idx] || {};
-      if (d.action === 'add') {
+      const target = d.target || u.target;
+      if (d.action === 'add' && target !== 'new' && db.one('products', target)) {
+        // An existing catalog product under the receipt's name: remember the link.
+        const p = db.one('products', target);
+        db.patch('products', p.id, { codes: (p.codes || []).concat([u.line.key]) });
+        lines[u.line.idx].productId = p.id;
+        summary.linked++;
+      } else if (d.action === 'add') {
         const cat = d.cat || u.cat;
         const p = createProduct({ name: d.name || u.line.name, cat, store: storeId, unit: u.line.weight ? 'ק״ג' : 'יח׳' });
         db.patch('products', p.id, { codes: [u.line.key] });

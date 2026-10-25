@@ -19,6 +19,168 @@ const money = s => parseFloat(s.replace('₪', ''));
 const isCode = s => /^\d{3,14}$/.test(s);
 const UNIT = /^(יח['׳]?|ק["״]?ג)$/;
 
+// ---------- text read from photos (OCR) ----------
+//
+// Photos give noisier text than a copied page: the shekel sign is often lost, digits get
+// split, and paper receipts put name and price on one line. This reader is deliberately
+// forgiving and its result always goes to an editing step before it is used.
+
+const HEB = /[֐-׿]{2,}/;
+const NOT_A_NAME = /סה["״']?כ|לתשלום|שולם|מע["״']?מ|עודף|אשראי|ויזה|ישראכרט|מאסטרקארד|מזומן|חסכת|פריטים|^קבלה|סניף|תודה|טלפון|ח\.?פ|עוסק|קופה|קופאי|הקבלה|היי,?$|הצגת|במבצע$|^מבצע$|מחיר ליח|^הנחה|כרטיס|חשבונית|מספר|ברקוד|לקוח/;
+const END = /סיכום התשלום|לפני מע|הצגת פחות/;
+const TOTAL = /סה["״']?כ\s*(?:שולם|לתשלום)|לתשלום|סה["״']?כ כולל/;
+
+function cleanOcrLine(s) {
+  return s
+    .replace(/[‎‏‪-‮]/g, '') // direction marks
+    .replace(/(\d)\s*[.,]\s*(\d{2})(?!\d)/g, '$1.$2') // "15 .00" / "15,00" → 15.00
+    .replace(/[|{}\[\]_~`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function amountsIn(s) {
+  // Prices have exactly two decimals; weights like 0.710 are not prices.
+  return [...s.matchAll(/(-?)\s*₪?\s*(\d{1,4}\.\d{2})(?!\d)(\s*-)?/g)].map(m => ({ value: parseFloat(m[2]), neg: !!(m[1] || m[3]) }));
+}
+
+function storeHint(text) {
+  if (/רמי לוי|rami/i.test(text)) return 'rami-levy';
+  if (/ten\s*2\s*ten|טן טו טן|טן 2 טן/i.test(text)) return 'ten2ten';
+  if (/שופרסל|shufersal/i.test(text)) return 'shufersal';
+  if (/קרפור|carrefour/i.test(text)) return 'carrefour';
+  return null;
+}
+
+// Items from one image's text.
+function itemsFromOcr(text, digital) {
+  const items = [];
+  let cur = null;
+  let started = false;
+  const finish = () => { if (cur && (cur.amount != null)) items.push(cur); cur = null; };
+  for (const rawLine of String(text).split('\n')) {
+    const line = cleanOcrLine(rawLine);
+    if (!line) continue;
+    if (END.test(line) || (!digital && started && TOTAL.test(line))) { finish(); break; }
+    if (TOTAL.test(line)) continue;
+    // Barcodes, or a short chain code on a line of its own (cucumber = "101").
+    const code = (line.match(/(?:^|\s)(\d{7,13})(?:\s|$)/) || line.match(/^(\d{3,6})$/) || [])[1] || null;
+    const amounts = amountsIn(line.replace(code || '\u0000', ' '));
+    // A discount line ("הנחה ... 2.60-") belongs to the product above it.
+    if (cur && amounts.length && amounts.every(a => a.neg)) {
+      cur.discount = Math.round((cur.discount + amounts.reduce((s, a) => s + a.value, 0)) * 100) / 100;
+      continue;
+    }
+    if (NOT_A_NAME.test(line)) continue;
+    const weight = (line.match(/(\d+\.\d{3})(?!\d)/) || [])[1];
+    // "2 x 10.90", or the same line reordered by right-to-left reading: "x 10.90 2".
+    const qtyMatch = line.match(/(?:^|\s)(\d{1,3})\s*(?:יח['׳]?|x|X|×|\*)/) || line.match(/[xX×*]\s*\d+\.\d{2}\s+(\d{1,3})(?:\s|$)/);
+    const name = line.replace(/-?\s*₪?\s*\d+(?:\.\d+)?\s*%?/g, ' ').replace(/יח['׳]?|ק["״']?ג|₪|[x×*%]/g, ' ').replace(/\s+/g, ' ').trim();
+    const hasName = HEB.test(name) && name.replace(/[^֐-׿a-zA-Z]/g, '').length >= 3;
+
+    if (hasName && !(amounts.length && amounts.every(a => a.neg))) {
+      // A new product line (paper receipts carry the price on the same line).
+      finish();
+      started = true;
+      cur = { name, code: null, qty: 1, weight: weight ? parseFloat(weight) : null, amount: null, discount: 0 };
+      const pos = amounts.filter(a => !a.neg);
+      if (pos.length) cur.amount = pos[pos.length - 1].value;
+      if (code) cur.code = code;
+      continue;
+    }
+    if (!cur) continue;
+    if (code && !cur.code) cur.code = code;
+    if (weight) cur.weight = parseFloat(weight);
+    else if (qtyMatch) cur.qty = parseInt(qtyMatch[1], 10);
+    const pos = amounts.filter(a => !a.neg);
+    for (const a of amounts) if (a.neg) cur.discount = Math.round((cur.discount + a.value) * 100) / 100;
+    if (qtyMatch && !digital && pos.length) {
+      // "8 x 2.20 17.60": the last amount is the line total. "2 x 10.90" alone: total = 2 × 10.90,
+      // unless the product line above already showed that total.
+      const q = parseInt(qtyMatch[1], 10);
+      const lineTotal = pos.length > 1 ? pos[pos.length - 1].value : Math.round(q * pos[0].value * 100) / 100;
+      if (cur.amount == null || pos.length > 1 || Math.abs(cur.amount - lineTotal) > 0.01) cur.amount = lineTotal;
+    } else if (cur.amount == null && pos.length) {
+      cur.amount = pos[0].value;
+    }
+  }
+  finish();
+  return items;
+}
+
+const sameItem = (a, b) => (a.code && a.code === b.code || a.name === b.name) && a.amount === b.amount;
+
+// Joins several screenshots, dropping items repeated where two shots overlap.
+function joinShots(lists) {
+  const out = [];
+  for (const list of lists) {
+    let k = Math.min(out.length, list.length);
+    for (; k > 0; k--) {
+      let match = true;
+      for (let i = 0; i < k && match; i++) match = sameItem(out[out.length - k + i], list[i]);
+      if (match) break;
+    }
+    out.push(...list.slice(k));
+  }
+  return out;
+}
+
+// Returns a draft for the editing step: { chain, date (yyyy-mm-dd), total, lines }.
+export function parseScannedTexts(texts) {
+  const all = texts.join('\n');
+  const digital = /הקבלה הדיגיטלית|במבצע|מחיר ליח/.test(all);
+  const lists = texts.map(t => itemsFromOcr(t, digital));
+  const items = joinShots(lists);
+  const dm = all.match(/(\d{1,2})[\/.](\d{1,2})[\/.](\d{2,4})/);
+  let date = new Date().toISOString().slice(0, 10);
+  if (dm) {
+    const y = dm[3].length === 2 ? 2000 + Number(dm[3]) : Number(dm[3]);
+    date = `${y}-${String(dm[2]).padStart(2, '0')}-${String(dm[1]).padStart(2, '0')}`;
+  }
+  let total = null;
+  const allLines = all.split('\n').map(cleanOcrLine).filter(Boolean);
+  for (let i = 0; i < allLines.length && total == null; i++) {
+    if (!TOTAL.test(allLines[i])) continue;
+    // The amount is on the same line, or (digital receipts) on the next one.
+    for (const line of [allLines[i], allLines[i + 1] || '']) {
+      const a = amountsIn(line).filter(x => !x.neg);
+      if (a.length) { total = a[a.length - 1].value; break; }
+    }
+  }
+  return {
+    chain: storeHint(all),
+    date,
+    total,
+    lines: items.map(it => {
+      // Digital receipts show what was paid; paper receipts show the price before the discount line.
+      const paid = digital ? it.amount : Math.round((it.amount - it.discount) * 100) / 100;
+      return { name: it.name, code: it.code || '', qty: it.weight ? 1 : it.qty, weight: it.weight, paid, discount: it.discount };
+    })
+  };
+}
+
+// Turns the edited draft into the receipt shape used for matching.
+export function receiptFromDraft(draft, chain) {
+  const lines = draft.lines.filter(l => l.name.trim() && l.paid >= 0).map(l => {
+    const gross = Math.round((Number(l.paid) + Number(l.discount || 0)) * 100) / 100;
+    const amount = l.weight || Number(l.qty) || 1;
+    return {
+      code: l.code || '', name: l.name.trim(), qty: l.weight ? 1 : Number(l.qty) || 1, weight: l.weight || null,
+      unitPrice: Math.round((gross / amount) * 100) / 100, gross, discount: Number(l.discount || 0),
+      promo: l.discount > 0 ? 'מבצע' : ''
+    };
+  });
+  const sum = Math.round(lines.reduce((s, l) => s + l.gross - l.discount, 0) * 100) / 100;
+  return {
+    chain,
+    docId: `scan-${chain}-${draft.date}-${Math.round((draft.total || sum) * 100)}`,
+    branch: '',
+    date: new Date(draft.date + 'T12:00:00').toISOString(),
+    total: draft.total || sum,
+    lines
+  };
+}
+
 export function looksLikeLink(text) {
   return /^\s*https?:\/\/\S+\s*$/.test(String(text || ''));
 }
