@@ -53,6 +53,91 @@ function tokenize(tokens) {
 
 const joinWords = words => words.join(' ').replace(/\s*(['"״׳])\s*/g, '$1').replace(/\s+/g, ' ').trim();
 
+// A PDF of the receipt web page itself (iPhone: share the page → save to Files). Per item:
+// [מבצע], the amount paid, the name (with the amount on the same line when there is no
+// promotion), "8 יח'" or "0.710 ק"ג", the code, and "-₪discount".
+function parsePagePdf(L, all) {
+  const words = l => l.filter(t => t.word).map(t => t.word);
+  const amounts = l => l.filter(t => t.amount != null).map(t => t.amount);
+  if (all.some(t => /^הצגת עוד \d+/.test(t))) {
+    return { error: 'בקובץ מופיעים רק חלק מהפריטים. בעמוד הקבלה לוחצים קודם "הצגת עוד פריטים", ורק אחר כך שומרים את העמוד.' };
+  }
+  const head = all.find(t => /\d{1,2}\/\d{1,2}\/\d{4}/.test(t)) || '';
+  const dm = head.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (!dm) return { error: 'לא מצאתי את תאריך הקבלה בקובץ.' };
+  const tm = head.match(/(\d{1,2}):(\d{2})/);
+  const txn = ((all.find(t => /^קבלה \d+/.test(t)) || '').match(/^קבלה (\d+)/) || [])[1] || '';
+  const branchLine = all.find(t => /^סניף /.test(t));
+  const paidAt = all.findIndex(t => /^סה["״]?כ שולם$/.test(t));
+  let total = null;
+  for (let k = paidAt + 1; paidAt >= 0 && k < Math.min(L.length, paidAt + 3) && total == null; k++) {
+    const a = amounts(L[k]).filter(x => x > 0);
+    if (a.length) total = a[0];
+  }
+
+  const items = [];
+  let pendingAmount = null;
+  let name = null;
+  let nameAmount = null;
+  let qty = 1;
+  let weight = null;
+  for (let i = 0; i < L.length; i++) {
+    const t = all[i];
+    if (/^(הצגת פחות|סיכום התשלום)/.test(t)) break;
+    const w = words(L[i]);
+    const am = amounts(L[i]);
+    const neg = am.filter(a => a < 0);
+    if (neg.length && !w.length) {
+      if (items.length) items[items.length - 1].discount = Math.round((items[items.length - 1].discount - neg.reduce((s, a) => s + a, 0)) * 100) / 100;
+      continue;
+    }
+    if (w.length === 1 && /^\d{3,14}$/.test(w[0]) && name) {
+      // The code closes the item.
+      const paid = nameAmount != null ? nameAmount : pendingAmount;
+      if (paid != null) items.push({ code: w[0], name, qty: weight ? 1 : qty, weight, paid, discount: 0 });
+      name = null; nameAmount = null; pendingAmount = null; qty = 1; weight = null;
+      continue;
+    }
+    const unitAt = w.findLastIndex((x, k) => (x === 'יח' && /^['׳]$/.test(w[k + 1] || '')) || (x === 'ק' && /^["״]$/.test(w[k + 1] || '') && w[k + 2] === 'ג'));
+    if (unitAt === 1 && /^\d+(\.\d+)?$/.test(w[0])) {
+      if (w[1] === 'ק') weight = parseFloat(w[0]); else qty = parseFloat(w[0]);
+      continue;
+    }
+    if (!w.length && am.length === 1 && am[0] > 0) { pendingAmount = am[0]; continue; }
+    if (t === 'מבצע' || !/[֐-׿]{2,}/.test(t)) continue;
+    if (/^(היי|הקבלה הדיגיטלית|קבלה |סניף |סה["״]?כ|\d+ פריטים|\d+ במבצע)/.test(t) || /^\d+ (פריטים|במבצע)$/.test(t)) continue;
+    name = joinWords(w);
+    nameAmount = am.length ? am[am.length - 1] : null;
+  }
+  if (!items.length) return { error: 'לא מצאתי פריטים בקובץ.' };
+  const lines = items.map(it => {
+    const gross = Math.round((it.paid + it.discount) * 100) / 100;
+    return {
+      code: it.code, name: it.name, qty: it.qty, weight: it.weight,
+      unitPrice: Math.round((gross / (it.weight || it.qty || 1)) * 100) / 100, gross, discount: it.discount,
+      promo: it.discount > 0 ? 'מבצע' : ''
+    };
+  });
+  const sum = Math.round(lines.reduce((s, l) => s + l.gross - l.discount, 0) * 100) / 100;
+  const expected = parseInt((all.find(t => /^\d+ פריטים$/.test(t)) || '0'), 10);
+  const warnings = [];
+  if (expected && lines.length < expected) warnings.push(`בקבלה כתוב ${expected} פריטים ונקראו ${lines.length}.`);
+  if (total != null && Math.abs(sum - total) > 0.05) warnings.push(`סכום הפריטים (₪${sum.toFixed(2)}) שונה מהסכום ששולם (₪${total.toFixed(2)}).`);
+  const [, d, m, y] = dm;
+  const date = new Date(Number(y), Number(m) - 1, Number(d), tm ? Number(tm[1]) : 12, tm ? Number(tm[2]) : 0);
+  return {
+    receipt: {
+      chain: 'rami-levy',
+      docId: `rl-${txn || 'x'}-${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+      branch: branchLine ? branchLine.replace(/^סניף\s+/, '') : '',
+      date: date.toISOString(),
+      total: total != null ? total : sum,
+      lines
+    },
+    warnings
+  };
+}
+
 export function parseReceiptPdfLines(lines) {
   const L = lines.map(tokenize);
   const words = l => l.filter(t => t.word).map(t => t.word);
@@ -60,6 +145,8 @@ export function parseReceiptPdfLines(lines) {
   const text = l => joinWords(words(l));
 
   const all = L.map(text);
+  // The receipt web page saved as a PDF, rather than the original document.
+  if (all.some(t => /הקבלה הדיגיטלית/.test(t)) && !all.some(t => /^תיאור כמות/.test(t))) return parsePagePdf(L, all);
   if (!all.some(t => /רמי לוי/.test(t))) return { error: 'זה לא נראה כמו קבלה של רמי לוי.' };
   const txnAt = all.findIndex(t => t === 'קבלה');
   const txn = txnAt >= 0 && /^\d+$/.test(all[txnAt + 1] || '') ? all[txnAt + 1] : '';

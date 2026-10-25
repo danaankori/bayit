@@ -389,10 +389,11 @@ function renderReceipts() {
           <b style="color:var(--ink)">באייפון</b>
           <ol style="margin:0;padding-inline-start:20px;display:flex;flex-direction:column;gap:4px">
             <li>פותחים את הקישור לקבלה מה-SMS</li>
-            <li>גוללים לתחתית העמוד ולוחצים "להורדת מסמך המקור"</li>
-            <li>כשהקובץ נפתח: כפתור השיתוף ← "שמירה בקבצים" ← שמירה</li>
-            <li>חוזרים לכאן: "טעינת קובץ PDF" ← בוחרים את הקובץ (בדרך כלל בתיקייה "הורדות" או "אחרונים")</li>
+            <li><b style="color:var(--ink)">חשוב:</b> לוחצים "הצגת עוד פריטים", כדי שכל המוצרים יופיעו</li>
+            <li>כפתור השיתוף של הדפדפן (ריבוע עם חץ למעלה) ← "שמירה בקבצים" ← שמירה</li>
+            <li>חוזרים לכאן: "טעינת קובץ PDF" ← בוחרים את הקובץ (בדרך כלל ב"אחרונים")</li>
           </ol>
+          <span>אפשר גם: בתחתית עמוד הקבלה ללחוץ "להורדת מסמך המקור", ולשמור את הקובץ שנפתח.</span>
           <b style="color:var(--ink)">באנדרואיד</b>
           <ol style="margin:0;padding-inline-start:20px;display:flex;flex-direction:column;gap:4px">
             <li>פותחים את הקישור ולוחצים "להורדת מסמך המקור"</li>
@@ -831,7 +832,7 @@ const A = {
       A.openReceipt(parseReceiptPdfLines(await readPdfLines(file)));
     } catch (e) {
       r.step = 'paste';
-      r.error = 'לא הצלחתי לקרוא את הקובץ. ודאו שזה ה-PDF מ"להורדת מסמך המקור" בעמוד הקבלה.';
+      r.error = 'לא הצלחתי לקרוא את הקובץ. ודאו שזה קובץ PDF של קבלה מרמי לוי (עמוד הקבלה שנשמר, או "להורדת מסמך המקור").';
     }
     render();
   },
