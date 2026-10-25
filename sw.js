@@ -1,16 +1,21 @@
-// Offline support: serve the app shell from cache and refresh it in the background.
-// The Supabase library from the CDN is cached too, so the app opens with no connection.
-// Bump VERSION whenever app files change.
-const VERSION = 'bayit-v7';
+// Offline support. App files come from the network when it answers quickly, so updates show
+// up on the next open; with no connection (or a slow one) they come from the cache.
+// The Supabase, reading and PDF libraries from the CDN have fixed versions and are cached.
+// Bump VERSION (and APP_VERSION in js/app.js) whenever app files change.
+const VERSION = 'bayit-v8';
 const ASSETS = [
   './', './index.html', './styles.css', './config.js', './manifest.webmanifest',
   './js/app.js', './js/store.js', './js/logic.js', './js/categories.js', './js/seed.js', './js/receiptText.js', './js/ocr.js', './js/receiptPdf.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'
 ];
 const CDN = 'https://cdn.jsdelivr.net';
+const NETWORK_WAIT_MS = 3000;
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(VERSION).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // "reload" skips the browser's own cache, so the new version really is new.
+  event.waitUntil(caches.open(VERSION)
+    .then(cache => cache.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', event => {
@@ -20,6 +25,30 @@ self.addEventListener('activate', event => {
       .then(() => self.clients.claim())
   );
 });
+
+async function networkFirst(req) {
+  const cache = await caches.open(VERSION);
+  const fromNetwork = fetch(req, { cache: 'no-cache' }).then(res => {
+    if (res.ok) cache.put(req, res.clone());
+    return res;
+  });
+  const timeout = new Promise(resolve => setTimeout(resolve, NETWORK_WAIT_MS, null));
+  try {
+    const res = await Promise.race([fromNetwork, timeout]);
+    if (res) return res;
+  } catch (e) { /* offline: use the cache */ }
+  const cached = await cache.match(req, { ignoreSearch: true });
+  return cached || fromNetwork;
+}
+
+async function cacheFirst(req) {
+  const cache = await caches.open(VERSION);
+  const cached = await cache.match(req);
+  if (cached) return cached;
+  const res = await fetch(req);
+  if (res.ok) cache.put(req, res.clone());
+  return res;
+}
 
 self.addEventListener('fetch', event => {
   const req = event.request;
@@ -40,16 +69,6 @@ self.addEventListener('fetch', event => {
     return;
   }
   if (req.method !== 'GET') return;
-  if (url.origin !== self.location.origin && url.origin !== CDN) return;
-  event.respondWith(
-    caches.open(VERSION).then(cache =>
-      cache.match(req, { ignoreSearch: url.origin === self.location.origin }).then(cached => {
-        const fresh = fetch(req).then(res => {
-          if (res.ok) cache.put(req, res.clone());
-          return res;
-        }).catch(() => cached);
-        return cached || fresh;
-      })
-    )
-  );
+  if (url.origin === self.location.origin) event.respondWith(networkFirst(req));
+  else if (url.origin === CDN) event.respondWith(cacheFirst(req));
 });

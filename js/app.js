@@ -9,6 +9,8 @@ import { readPdfLines, parseReceiptPdfLines } from './receiptPdf.js';
 import { readImages } from './ocr.js';
 
 const app = document.getElementById('app');
+// Shown in settings; keep in step with VERSION in sw.js.
+const APP_VERSION = 8;
 
 const ui = {
   tab: 'catalog',
@@ -663,7 +665,7 @@ function renderSettings() {
       <div class="row-actions"><button class="btn" data-a="exportData">ייצוא גיבוי</button>
       <label class="btn" style="cursor:pointer">ייבוא מגיבוי<input type="file" accept="application/json,.json" data-in="importFile" class="sr"></label></div>
     </div></section>
-    <p class="tiny muted" style="text-align:center;padding:10px">בית · גרסה 1</p>
+    <p class="tiny muted" style="text-align:center;padding:10px">בית · גרסה ${APP_VERSION}</p>
   </div>`;
 }
 
@@ -1097,4 +1099,12 @@ db.connect();
 // Lets screens be checked on a local test server without a real receipt.
 if (location.hostname === 'localhost') window.__bayit = { ui, render, L, db, A };
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  // When a new version takes over an open app, reload once so it shows right away.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloading) { reloading = true; location.reload(); }
+  });
+  navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {});
+}
