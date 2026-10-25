@@ -4,7 +4,8 @@
 import * as db from './store.js';
 import * as L from './logic.js';
 import { CATS, guessCategory } from './categories.js';
-import { parseReceiptText, looksLikeLink, parseScannedTexts, receiptFromDraft } from './receiptText.js';
+import { parseReceiptText, looksLikeLink, looksLikeJson, parseReceiptJson, parseScannedTexts, receiptFromDraft } from './receiptText.js';
+import { readPdfLines, parseReceiptPdfLines } from './receiptPdf.js';
 import { readImages } from './ocr.js';
 
 const app = document.getElementById('app');
@@ -380,21 +381,43 @@ function renderReceipts() {
   return `${head('אחרי הקנייה', 'ייבוא קבלה')}
   <div class="wrap">
     <div class="card bordered">
-      <h2 style="font-size:17px">קיבלתם קבלה דיגיטלית?</h2>
-      <ol class="small muted" style="margin:0;padding-inline-start:20px;display:flex;flex-direction:column;gap:4px">
-        <li>פותחים את הקישור מה-SMS</li>
-        <li>בעמוד הקבלה לוחצים "הצגת עוד פריטים"</li>
-        <li>לחיצה ארוכה על הטקסט ← "בחר הכל" ← "העתק"</li>
-        <li>חוזרים לכאן ולוחצים "הדבקה"</li>
-      </ol>
-      <label class="sr" for="receiptText">טקסט הקבלה</label>
-      <textarea id="receiptText" class="field" data-in="receiptText" rows="4" style="height:auto;padding:10px 12px;resize:vertical" placeholder="כאן יופיע הטקסט שהועתק מעמוד הקבלה">${esc(r.text)}</textarea>
-      <div class="row-actions"><button class="btn primary" style="flex:1" data-a="paste">הדבקה</button>
-      <button class="btn" data-a="readReceipt" ${r.text.trim() ? '' : 'disabled'}>קריאת הקבלה</button></div>
-      ${looksLikeLink(r.text) ? `<div class="banner warn" role="status" style="flex-wrap:wrap"><span style="flex:1;min-width:200px">הודבק קישור. פותחים אותו, לוחצים "הצגת עוד פריטים", מעתיקים את כל העמוד וחוזרים לכאן.</span>
-        <a class="btn small" href="${esc(r.text.trim())}" target="_blank" rel="noopener">פתיחת הקבלה</a></div>` : ''}
+      <h2 style="font-size:17px">קבלה דיגיטלית של רמי לוי</h2>
+      <p class="small muted">טוענים את קובץ ה-PDF של הקבלה. הוא נקרא במלואו, כולל ברקודים, כמויות, מחירים ומבצעים.</p>
+      <label class="btn primary block" style="cursor:pointer">טעינת קובץ PDF<input type="file" accept="application/pdf,.pdf" data-in="receiptPdf" class="sr"></label>
+      <details id="helpPdf"><summary class="small" style="cursor:pointer;color:var(--green)">איך משיגים את קובץ ה-PDF?</summary>
+        <div class="small muted" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+          <b style="color:var(--ink)">באייפון</b>
+          <ol style="margin:0;padding-inline-start:20px;display:flex;flex-direction:column;gap:4px">
+            <li>פותחים את הקישור לקבלה מה-SMS</li>
+            <li>גוללים לתחתית העמוד ולוחצים "להורדת מסמך המקור"</li>
+            <li>כשהקובץ נפתח: כפתור השיתוף ← "שמירה בקבצים" ← שמירה</li>
+            <li>חוזרים לכאן: "טעינת קובץ PDF" ← בוחרים את הקובץ (בדרך כלל בתיקייה "הורדות" או "אחרונים")</li>
+          </ol>
+          <b style="color:var(--ink)">באנדרואיד</b>
+          <ol style="margin:0;padding-inline-start:20px;display:flex;flex-direction:column;gap:4px">
+            <li>פותחים את הקישור ולוחצים "להורדת מסמך המקור"</li>
+            <li>בקובץ שירד: שיתוף ← "בית". האפליקציה תיפתח עם הקבלה</li>
+            <li>או: "טעינת קובץ PDF" כאן ובחירת הקובץ מההורדות</li>
+          </ol>
+          <span>באפשרות "הורדת חשבונית מס" לא צריך להשתמש: היא מבקשת שם ות.ז.</span>
+        </div>
+      </details>
+      <div style="border-top:1px solid var(--line-soft);padding-top:10px;display:flex;flex-direction:column;gap:8px">
+        <span class="small muted">יש לך באייפון את קיצור הדרך "קבלה לבית"? אחרי שהרצת אותו מהקישור, לוחצים כאן:</span>
+        <button class="btn" data-a="paste">הדבקת הקבלה מקיצור הדרך</button>
+      </div>
       ${r.error ? `<div class="banner warn" role="alert">${esc(r.error)}</div>` : ''}
-      <p class="tiny muted">נתמכות כרגע קבלות דיגיטליות של רמי לוי. הקריאה נעשית בטלפון, ונשמרים רק המוצרים, הכמויות, המחירים, הסניף והתאריך.</p>
+      <details id="pasteText"><summary class="tiny muted" style="cursor:pointer">אפשרות נוספת: הדבקת הטקסט של עמוד הקבלה</summary>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+          <span class="tiny muted">בעמוד הקבלה: "הצגת עוד פריטים" ← לחיצה ארוכה ← "בחר הכל" ← "העתק", ואז הדבקה כאן.</span>
+          <label class="sr" for="receiptText">טקסט הקבלה</label>
+          <textarea id="receiptText" class="field" data-in="receiptText" rows="3" style="height:auto;padding:10px 12px;resize:vertical" placeholder="הטקסט שהועתק מעמוד הקבלה">${esc(r.text)}</textarea>
+          <button class="btn" data-a="readReceipt" ${r.text.trim() ? '' : 'disabled'}>קריאת הטקסט</button>
+          ${looksLikeLink(r.text) ? `<div class="banner warn" role="status" style="flex-wrap:wrap"><span style="flex:1;min-width:200px">הודבק קישור, לא טקסט. אפשר לפתוח אותו ולהוריד משם את ה-PDF.</span>
+            <a class="btn small" href="${esc(r.text.trim())}" target="_blank" rel="noopener">פתיחת הקבלה</a></div>` : ''}
+        </div>
+      </details>
+      <p class="tiny muted">הקריאה נעשית בטלפון. נשמרים רק המוצרים, הכמויות, המחירים, הסניף והתאריך.</p>
     </div>
     <div class="card bordered">
       <h2 style="font-size:17px">קבלה מודפסת או צילומי מסך</h2>
@@ -439,7 +462,7 @@ function renderScanEdit() {
     </div>`).join('')}</div>
     <button class="btn" data-a="scanAddLine">${I.plus} הוספת שורה</button>
     ${r.error ? `<div class="banner warn" role="alert">${esc(r.error)}</div>` : ''}
-    <details><summary class="tiny muted" style="cursor:pointer">הטקסט שזוהה בצילום</summary><pre class="tiny muted" style="white-space:pre-wrap;direction:rtl">${esc(r.ocrText || '')}</pre></details>
+    <details id="ocrText"><summary class="tiny muted" style="cursor:pointer">הטקסט שזוהה בצילום</summary><pre class="tiny muted" style="white-space:pre-wrap;direction:rtl">${esc(r.ocrText || '')}</pre></details>
     <button class="btn link" data-a="receiptReset">ביטול</button>
     <div class="spacer-cta"></div>
   </div>
@@ -576,7 +599,7 @@ function renderSettings() {
       <span>${esc(syncText())}${db.pendingCount() ? ` · ${db.pendingCount()} שינויים ממתינים לשליחה` : ''}</span>
       ${st === 'error' ? `<span class="small muted">השינויים נשמרים בטלפון ויישלחו כשהשרת יחזור. אם הוא במצב שינה, מעירים אותו בלוח הבקרה של Supabase.</span><span class="tiny muted" dir="ltr">${esc(db.sync.error)}</span>` : ''}
       ${hh ? `<button class="btn" data-a="syncNow">סנכרון עכשיו</button>` : ''}
-      <details ${db.configured() ? '' : 'open'}><summary class="small" style="cursor:pointer">פרטי החיבור ל-Supabase</summary>
+      <details id="cfgDetails" ${db.configured() ? '' : 'open'}><summary class="small" style="cursor:pointer">פרטי החיבור ל-Supabase</summary>
         <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
           <label class="lbl" for="cfgUrl">Project URL</label><input id="cfgUrl" class="field" dir="ltr" data-in="cfgUrl" value="${esc(cfgUrl)}" placeholder="https://xxxx.supabase.co" autocomplete="off">
           <label class="lbl" for="cfgKey">anon public key</label><input id="cfgKey" class="field" dir="ltr" data-in="cfgKey" value="${esc(cfgKey)}" autocomplete="off">
@@ -632,7 +655,10 @@ function render() {
   else html = ({ catalog: renderCatalog, list: renderList, receipts: renderReceipts, prices: renderPrices, settings: renderSettings }[ui.tab])() + nav();
   if (ui.toast) html += `<div class="toast" role="status">${esc(ui.toast)}</div>`;
   app.className = ui.shop ? 'no-nav' : '';
+  // Collapsible sections stay open across redraws (e.g. while typing inside one).
+  const openDetails = [...app.querySelectorAll('details[id]')].filter(d => d.open).map(d => d.id);
   app.innerHTML = html;
+  for (const id of openDetails) { const d = document.getElementById(id); if (d) d.open = true; }
 
   if (focusId) {
     const el = document.getElementById(focusId);
@@ -763,28 +789,51 @@ const A = {
   },
 
   async paste() {
+    const r = ui.receipt;
     try {
-      ui.receipt.text = await navigator.clipboard.readText();
-      ui.receipt.error = '';
-      if (!looksLikeLink(ui.receipt.text)) A.readReceipt();
+      const t = await navigator.clipboard.readText();
+      r.error = '';
+      if (looksLikeJson(t)) A.openReceipt(parseReceiptJson(t));
+      else if (looksLikeLink(t)) r.error = 'בלוח יש קישור ולא קבלה. מריצים את קיצור הדרך "קבלה לבית" מהקישור, או טוענים את קובץ ה-PDF.';
+      else if (t.trim()) { r.text = t; A.readReceipt(); }
+      else r.error = 'הלוח ריק.';
     } catch (e) {
-      ui.receipt.error = 'לא הצלחתי לקרוא מהלוח. אפשר להדביק ידנית בשדה (לחיצה ארוכה ← הדבקה).';
+      r.error = 'לא הצלחתי לקרוא מהלוח. אם הדפדפן שאל, צריך לאשר "הדבקה".';
     }
     render();
   },
   readReceipt() {
     const r = ui.receipt;
     if (looksLikeLink(r.text)) return;
-    const res = parseReceiptText(r.text);
-    if (res.error) { r.error = res.error; return; }
-    if (L.receiptExists(res.receipt)) { r.error = `הקבלה מ-${fmtDate(res.receipt.date)} כבר יובאה.`; return; }
+    A.openReceipt(looksLikeJson(r.text) ? parseReceiptJson(r.text) : parseReceiptText(r.text));
+  },
+  // Goes from a read receipt (text, PDF or shortcut) to the comparison with the list.
+  openReceipt(res) {
+    const r = ui.receipt;
+    if (res.error) { r.error = res.error; r.step = 'paste'; return; }
+    if (L.receiptExists(res.receipt)) { r.error = `הקבלה מ-${fmtDate(res.receipt.date)} כבר יובאה.`; r.step = 'paste'; return; }
     r.model = L.reconcile(res.receipt);
-    r.warnings = res.warnings;
+    r.warnings = res.warnings || [];
     r.dec = { confirm: {}, unknown: {}, missing: {} };
     r.error = '';
     r.step = 'review';
     r.showMatched = false;
     scrollTo(0, 0);
+  },
+  async loadPdf(file) {
+    const r = ui.receipt;
+    ui.tab = 'receipts';
+    r.step = 'scanning';
+    r.scan = { f: 0.3, label: 'קורא את קובץ ה-PDF' };
+    r.error = '';
+    render();
+    try {
+      A.openReceipt(parseReceiptPdfLines(await readPdfLines(file)));
+    } catch (e) {
+      r.step = 'paste';
+      r.error = 'לא הצלחתי לקרוא את הקובץ. ודאו שזה ה-PDF מ"להורדת מסמך המקור" בעמוד הקבלה.';
+    }
+    render();
   },
   async scan(files) {
     const r = ui.receipt;
@@ -915,6 +964,7 @@ const INPUTS = {
   unknownName: (v, el) => { const dec = ui.receipt.dec.unknown; dec[el.dataset.k] = { ...(dec[el.dataset.k] || {}), name: v }; },
   unknownCat: (v, el) => { const dec = ui.receipt.dec.unknown; dec[el.dataset.k] = { ...(dec[el.dataset.k] || {}), cat: v }; },
   receiptPhotos: (v, el) => { const files = [...(el.files || [])]; if (files.length) A.scan(files); },
+  receiptPdf: (v, el) => { const f = el.files && el.files[0]; if (f) A.loadPdf(f); },
   scanDate: v => { ui.receipt.draft.date = v; },
   scanName: (v, el) => { ui.receipt.draft.lines[el.dataset.k].name = v; },
   scanQty: (v, el) => {
@@ -960,13 +1010,30 @@ db.load();
 await L.seedIfEmpty();
 db.onChange(render);
 
-// Receipt text shared from another app (Android share sheet).
+// Shared from another app (Android share sheet): a receipt PDF or photo kept by the service
+// worker, or text.
 const params = new URLSearchParams(location.search);
-const shared = params.get('text') || params.get('url');
-if (shared) {
-  ui.tab = 'receipts';
-  ui.receipt.text = shared;
+const sharedText = params.get('text') || params.get('url');
+const sharedFile = params.get('shared') === 'file';
+if (sharedText || sharedFile) {
   history.replaceState(null, '', location.pathname);
+  ui.tab = 'receipts';
+}
+if (sharedFile) {
+  (async () => {
+    try {
+      const cache = await caches.open('bayit-share');
+      const res = await cache.match('shared-file');
+      if (!res) return;
+      const blob = await res.blob();
+      await cache.delete('shared-file');
+      const file = new File([blob], decodeURIComponent(res.headers.get('x-name') || 'receipt'), { type: blob.type });
+      if (/pdf/.test(blob.type) || /\.pdf$/i.test(file.name)) A.loadPdf(file);
+      else if (/^image\//.test(blob.type)) A.scan([file]);
+    } catch (e) { /* nothing shared */ }
+  })();
+} else if (sharedText && !looksLikeLink(sharedText)) {
+  ui.receipt.text = sharedText;
   A.readReceipt();
 }
 

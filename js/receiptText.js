@@ -19,6 +19,48 @@ const money = s => parseFloat(s.replace('₪', ''));
 const isCode = s => /^\d{3,14}$/.test(s);
 const UNIT = /^(יח['׳]?|ק["״]?ג)$/;
 
+// ---------- receipt data from the iPhone shortcut ----------
+//
+// The "קבלה לבית" shortcut opens the receipt from the phone, like a browser does, and copies
+// Rami Levy's receipt data (JSON) to the clipboard. Only items, totals, branch and date are kept.
+
+export function looksLikeJson(text) {
+  return /^\s*\{/.test(String(text || ''));
+}
+
+export function parseReceiptJson(text) {
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) { return { error: 'התוכן שהודבק אינו קבלה תקינה. כדאי להריץ שוב את קיצור הדרך.' }; }
+  const d = obj && (obj.data || obj);
+  if (!d || !Array.isArray(d.items)) {
+    return { error: 'רמי לוי לא החזירו את פרטי הקבלה לקיצור הדרך. אפשר לטעון את קובץ ה-PDF במקום.' };
+  }
+  const num = v => (typeof v === 'number' ? v : parseFloat(String(v == null ? '0' : v))) || 0;
+  const lines = d.items.map(it => {
+    const extra = Array.isArray(it.additional_info) ? it.additional_info : [];
+    const discount = Math.round(extra.reduce((s, a) => s + Math.max(0, -num(a.value)), 0) * 100) / 100;
+    const weight = it.weight ? num(it.weight) / 1000 : null;
+    return {
+      code: String(it.code == null ? '' : it.code), name: String(it.name || ''),
+      qty: weight ? 1 : num(it.quantity), weight, unitPrice: num(it.price), gross: num(it.total), discount,
+      promo: extra.map(a => String(a.key || '')).filter(Boolean).join(' · ')
+    };
+  });
+  const created = d.created_at ? new Date(d.created_at) : new Date();
+  const day = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, '0')}-${String(created.getDate()).padStart(2, '0')}`;
+  return {
+    receipt: {
+      chain: 'rami-levy',
+      docId: `rl-${d.transaction_id || 'x'}-${day}`,
+      branch: (d.branch && d.branch.name) || '',
+      date: created.toISOString(),
+      total: num(d.payments && d.payments.total),
+      lines
+    },
+    warnings: []
+  };
+}
+
 // ---------- text read from photos (OCR) ----------
 //
 // Photos give noisier text than a copied page: the shekel sign is often lost, digits get
