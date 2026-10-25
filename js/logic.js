@@ -112,6 +112,78 @@ export function productName(id) {
   return p ? p.name : 'מוצר שנמחק';
 }
 
+// ---------- pasted lists ----------
+
+// Splits a written list into lines with quantities: "חומץ בלסמי×2", "2 חלב", "- סודה".
+export function parseListText(text) {
+  return String(text || '').split(/\n|,|،|;/).map(raw => raw.trim()).filter(Boolean).map(raw => {
+    let name = raw.replace(/^[-–•*·\d]+[.)]\s+/, '').replace(/^[-–•*·]\s*/, '').trim();
+    let qty = 1;
+    let m = name.match(/^(.*?)\s*[×xX*]\s*(\d+(?:\.\d+)?)$/) || name.match(/^(.*?)\s+(\d+(?:\.\d+)?)\s*(?:יח['׳]?|יחידות)$/);
+    if (m && m[1].trim()) { name = m[1].trim(); qty = parseFloat(m[2]); }
+    else if ((m = name.match(/^(\d+(?:\.\d+)?)\s*[×xX*]?\s+(.+)$/))) { qty = parseFloat(m[1]); name = m[2].trim(); }
+    return { raw, name, qty: qty > 0 ? qty : 1 };
+  }).filter(l => l.name);
+}
+
+// Spelling-tolerant key: without ו/י (נייר אפיה = נייר אפייה), hyphens and punctuation.
+function looseKey(s) {
+  return norm(s).replace(/[-–־]/g, '').replace(/[.,()\/]/g, ' ').replace(/[וי]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function matchScore(query, name) {
+  const a = looseKey(query);
+  const b = looseKey(name);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const qa = a.split(' ');
+  const qb = b.split(' ');
+  // Words match when equal, or when the shorter one (3+ letters) starts the longer one.
+  const same = (x, y) => x === y || (Math.min(x.length, y.length) >= 3 && (y.startsWith(x) || x.startsWith(y)));
+  const hit = (x, list) => list.some(y => same(x, y));
+  const fromQuery = qa.filter(x => hit(x, qb)).length / qa.length;
+  const fromName = qb.filter(y => hit(y, qa)).length / qb.length;
+  return fromQuery * 0.7 + fromName * 0.3;
+}
+
+// Best catalog products for a written name, best first.
+export function matchProducts(name) {
+  return products()
+    .map(p => ({ p, score: matchScore(name, p.name) }))
+    .filter(x => x.score >= 0.5)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+}
+
+// Adds reviewed lines to the list in one go. rows: [{include, choice, name, cat, qty, store}]
+export function addPastedList(rows) {
+  let added = 0;
+  let updated = 0;
+  let created = 0;
+  db.batch(() => {
+    for (const r of rows) {
+      if (!r.include) continue;
+      let pid = r.choice;
+      if (pid === 'new') {
+        pid = createProduct({ name: r.name, cat: r.cat, store: r.store }).id;
+        created++;
+      }
+      const existing = itemForProduct(pid);
+      if (existing) {
+        db.patch('items', existing.id, { qty: r.qty, store: r.store, status: 'open' });
+        updated++;
+      } else {
+        db.put('items', {
+          id: db.uid('i'), productId: pid, store: r.store, qty: r.qty, note: '', status: 'open',
+          addedBy: db.raw().me.name || '', addedAt: Date.now()
+        });
+        added++;
+      }
+    }
+  });
+  return { added, updated, created };
+}
+
 // Groups items of one store by the store's route order.
 export function groupByRoute(items, store) {
   const route = routeOf(store);

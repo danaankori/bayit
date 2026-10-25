@@ -17,6 +17,7 @@ const ui = {
   add: { open: false, name: '', cat: null, target: null, picking: false },
   lastAdded: null,
   listQ: '',
+  bulk: null,
   shopQ: '',
   finishing: false,
   receipt: { step: 'paste', text: '', error: '', warnings: [], model: null, dec: null, summary: null, showMatched: false },
@@ -123,6 +124,7 @@ function addForm() {
   return `<div class="card bordered">
     <label class="lbl" for="addName" style="margin:0">מה להוסיף? רק השם, את השאר האפליקציה משלימה</label>
     <input id="addName" class="field" data-in="addName" value="${esc(a.name)}" placeholder="למשל: חומץ בלסמי" autocomplete="off">
+    ${!a.name ? `<button class="btn link small" style="align-self:flex-start;padding:0" data-a="bulkOpen">יש רשימה כתובה? הדבקת כמה מוצרים בבת אחת</button>` : ''}
     ${existing.length ? `<div style="display:flex;flex-direction:column;gap:6px"><span class="tiny muted">כבר יש בקטלוג</span>
       ${existing.map(p => { const inList = !!L.itemForProduct(p.id); return `<button class="btn" style="justify-content:space-between;background:#F7F8F6" data-a="addExisting" data-id="${p.id}"><span>${esc(p.name)} <span class="tiny muted">· ${esc(p.cat)}</span></span><span style="color:var(--green);font-weight:600">${inList ? 'כבר ברשימה' : '+ לרשימה'}</span></button>`; }).join('')}</div>` : ''}
     ${name ? `<div class="card soft" style="padding:10px 12px">
@@ -200,7 +202,7 @@ function renderList() {
   const inOther = other ? L.listItems(other).filter(hits).length : 0;
   const hh = db.raw().household;
   let n = 0;
-  return `${head(hh ? 'רשימה משותפת · ' + esc(hh.name) : 'שמור במכשיר הזה', 'רשימת הקניות', `<button class="btn small" data-a="tab" data-tab="catalog">${I.plus} מהקטלוג</button>`)}
+  return `${head(hh ? 'רשימה משותפת · ' + esc(hh.name) : 'שמור במכשיר הזה', 'רשימת הקניות', `<div class="row-actions" style="justify-content:flex-end"><button class="btn small" data-a="bulkOpen">הדבקת רשימה</button><button class="btn small" data-a="tab" data-tab="catalog">${I.plus} מהקטלוג</button></div>`)}
   <div class="wrap">
     <div class="seg" role="tablist">${act.map(s => `<button role="tab" class="${s.id === store.id ? 'on' : ''}" aria-selected="${s.id === store.id}" data-a="listStore" data-id="${s.id}"><span class="dot" style="background:${s.color}"></span>${esc(s.name)}<span class="count">${L.listItems(s.id).filter(hits).length}</span></button>`).join('')}</div>
     ${searchBox('listQ', ui.listQ, 'חיפוש ברשימה')}
@@ -221,6 +223,84 @@ function renderList() {
     <div class="spacer-cta"></div>
   </div>
   ${L.listItems(store.id).length ? `<div class="footer-cta"><button class="cta center" style="background:${store.color}" data-a="startShop" data-id="${store.id}">${I.cart} מצב קנייה · ${esc(store.name)}</button></div>` : ''}`;
+}
+
+// ---------- pasted list ----------
+
+function renderBulk() {
+  const b = ui.bulk;
+  if (b.step === 'paste') {
+    return `${head('כמה מוצרים בבת אחת', 'הדבקת רשימה')}
+    <div class="wrap">
+      <div class="card bordered">
+        <p class="small muted">מדביקים רשימה שכבר כתובה, שורה לכל מוצר. כמות כותבים כך: "חומץ בלסמי×2" או "2 חלב".</p>
+        <label class="sr" for="bulkText">הרשימה</label>
+        <textarea id="bulkText" class="field" data-in="bulkText" rows="10" style="height:auto;padding:10px 12px;resize:vertical" placeholder="פילטר למים&#10;חומץ בלסמי×2&#10;נוזל קוקוס×3">${esc(b.text)}</textarea>
+        <div class="row-actions"><button class="btn" data-a="bulkPaste">הדבקה</button>
+        <button class="btn primary" style="flex:1" data-a="bulkReview" ${b.text.trim() ? '' : 'disabled'}>המשך</button></div>
+        <button class="btn link" data-a="bulkCancel">ביטול</button>
+      </div>
+    </div>`;
+  }
+  const act = L.activeStores();
+  const n = b.rows.filter(r => r.include).length;
+  const fresh = b.rows.filter(r => r.include && r.choice === 'new').length;
+  return `${head(`${b.rows.length} שורות · ${fresh ? fresh + ' מוצרים חדשים' : 'כולם מהקטלוג'}`, 'בדיקה לפני הוספה')}
+  <div class="wrap">
+    <div class="card soft" style="padding:10px 12px">
+      <span class="small muted">לאיזו חנות?</span>
+      <div class="wrap-chips">${[{ id: 'auto', name: 'לפי כל מוצר' }].concat(act).map(s => `<button class="chip ${b.storeAll === s.id ? 'on' : ''}" aria-pressed="${b.storeAll === s.id}" data-a="bulkStoreAll" data-id="${s.id}">${esc(s.name)}</button>`).join('')}</div>
+    </div>
+    <p class="tiny muted" style="margin:0 4px">מה שמסומן "התאמה משוערת" כדאי לבדוק. אפשר לבחור מוצר אחר מהרשימה או "מוצר חדש".</p>
+    ${b.rows.map((r, i) => {
+      const inList = r.choice !== 'new' && L.itemForProduct(r.choice);
+      const tag = r.choice === 'new' ? ['מוצר חדש', 'var(--green)'] : (r.exact ? null : ['התאמה משוערת', 'var(--warn)']);
+      return `<div class="card" style="gap:8px;${r.include ? '' : 'opacity:.55'}">
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="bi${i}" data-in="bulkInclude" data-k="${i}" ${r.include ? 'checked' : ''} style="width:22px;height:22px;accent-color:var(--green)">
+          <label for="bi${i}" style="flex:1;font-weight:500">${esc(r.raw)}</label>
+          ${tag ? `<span class="tiny" style="color:${tag[1]};font-weight:600">${tag[0]}</span>` : ''}
+        </div>
+        ${r.include ? `<label class="sr" for="bc${i}">מוצר</label>
+        <select id="bc${i}" class="field" data-in="bulkChoice" data-k="${i}">
+          ${r.cands.map(c => `<option value="${c.id}" ${r.choice === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+          <option value="new" ${r.choice === 'new' ? 'selected' : ''}>מוצר חדש: ${esc(r.name)}</option>
+        </select>
+        ${r.choice === 'new' ? `<label class="sr" for="bk${i}">קטגוריה</label><select id="bk${i}" class="field" data-in="bulkCat" data-k="${i}">${CATS.map(c => `<option ${c === r.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="stepper light"><button data-a="bulkQty" data-k="${i}" data-d="1" aria-label="עוד אחד">${I.plus}</button><span>${r.qty}</span><button data-a="bulkQty" data-k="${i}" data-d="-1" aria-label="אחד פחות">${I.minus}</button></div>
+          ${storePill(r.store, 'bulkStore', i)}
+          ${inList ? `<span class="tiny muted">כבר ברשימה (${inList.qty}), הכמות תתעדכן</span>` : ''}
+        </div>` : ''}
+      </div>`;
+    }).join('')}
+    <button class="btn link" data-a="bulkBack">חזרה לעריכת הטקסט</button>
+    <div class="spacer-cta"></div>
+  </div>
+  <div class="footer-cta"><button class="cta center" data-a="bulkApply" ${n ? '' : 'disabled'}>הוספת ${n} פריטים לרשימה</button></div>`;
+}
+
+function buildBulkRows(text, storeAll) {
+  return L.parseListText(text).map(l => {
+    const m = L.matchProducts(l.name);
+    const best = m[0];
+    const cat = guessCategory(l.name) || 'שונות';
+    const row = {
+      raw: l.raw, name: l.name, qty: l.qty, include: true,
+      choice: best ? best.p.id : 'new', exact: !!best && best.score === 1,
+      cands: m.map(x => ({ id: x.p.id, name: x.p.name })), cat, store: null
+    };
+    row.store = bulkStoreFor(row, storeAll);
+    return row;
+  });
+}
+
+function bulkStoreFor(row, storeAll) {
+  if (storeAll && storeAll !== 'auto') return storeAll;
+  if (row.choice === 'new') return L.defaultStoreFor(row.cat);
+  const it = L.itemForProduct(row.choice);
+  const p = db.one('products', row.choice);
+  return (it && it.store) || (p && p.store) || L.defaultStoreFor(row.cat);
 }
 
 // ---------- shopping mode ----------
@@ -489,6 +569,7 @@ function render() {
   let html;
   if (!db.raw().me.name) html = renderWelcome();
   else if (ui.shop) html = renderShop();
+  else if (ui.bulk) html = renderBulk() + nav();
   else html = ({ catalog: renderCatalog, list: renderList, receipts: renderReceipts, prices: renderPrices, settings: renderSettings }[ui.tab])() + nav();
   if (ui.toast) html += `<div class="toast" role="status">${esc(ui.toast)}</div>`;
   app.className = ui.shop ? 'no-nav' : '';
@@ -514,7 +595,42 @@ function toast(msg) {
 
 const A = {
   noop() {},
-  tab(d) { ui.tab = d.tab; ui.shop = null; scrollTo(0, 0); },
+  tab(d) { ui.tab = d.tab; ui.shop = null; ui.bulk = null; scrollTo(0, 0); },
+
+  bulkOpen() { ui.bulk = { step: 'paste', text: '', rows: [], storeAll: 'auto' }; scrollTo(0, 0); },
+  bulkCancel() { ui.bulk = null; },
+  async bulkPaste() {
+    try { ui.bulk.text = await navigator.clipboard.readText(); } catch (e) { toast('לא הצלחתי לקרוא מהלוח. אפשר להדביק ידנית בשדה.'); }
+    render();
+  },
+  bulkReview() {
+    const b = ui.bulk;
+    b.rows = buildBulkRows(b.text, b.storeAll);
+    if (!b.rows.length) { toast('לא נמצאו מוצרים בטקסט'); return; }
+    b.step = 'review';
+    scrollTo(0, 0);
+  },
+  bulkBack() { ui.bulk.step = 'paste'; },
+  bulkStoreAll(d) {
+    const b = ui.bulk;
+    b.storeAll = d.id;
+    for (const r of b.rows) r.store = bulkStoreFor(r, b.storeAll);
+  },
+  bulkQty(d) { const r = ui.bulk.rows[d.k]; r.qty = Math.max(1, r.qty + Number(d.d)); },
+  bulkStore(d) { const r = ui.bulk.rows[d.id]; r.store = otherStoreId(r.store) || r.store; },
+  bulkApply() {
+    const s = L.addPastedList(ui.bulk.rows);
+    const first = ui.bulk.rows.find(r => r.include);
+    ui.bulk = null;
+    ui.tab = 'list';
+    if (first) ui.listStore = first.store;
+    const parts = [];
+    if (s.added) parts.push(`${s.added} נוספו`);
+    if (s.updated) parts.push(`${s.updated} עודכנו`);
+    if (s.created) parts.push(`${s.created} מוצרים חדשים בקטלוג`);
+    toast(parts.join(' · ') || 'לא נוסף כלום');
+    scrollTo(0, 0);
+  },
   clear(d) { ui[d.k] = ''; },
 
   toggleAdd() { ui.add = { open: !ui.add.open, name: '', cat: null, target: null, picking: false }; },
@@ -683,6 +799,15 @@ const INPUTS = {
   priceQ: v => { ui.priceQ = v; },
   addName: v => { ui.add.name = v; },
   receiptText: v => { ui.receipt.text = v; ui.receipt.error = ''; },
+  bulkText: v => { ui.bulk.text = v; },
+  bulkInclude: (v, el) => { ui.bulk.rows[el.dataset.k].include = el.checked; },
+  bulkChoice: (v, el) => {
+    const r = ui.bulk.rows[el.dataset.k];
+    r.choice = v;
+    r.exact = v !== 'new' && r.cands[0] && r.cands[0].id === v && r.exact;
+    r.store = bulkStoreFor(r, ui.bulk.storeAll);
+  },
+  bulkCat: (v, el) => { const r = ui.bulk.rows[el.dataset.k]; r.cat = v; r.store = bulkStoreFor(r, ui.bulk.storeAll); },
   welcomeName: v => { ui.welcomeName = v; },
   meName: v => { db.setLocal('me', { ...db.raw().me, name: v }); },
   hhName: v => { ui.hh.name = v; },
