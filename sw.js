@@ -1,7 +1,7 @@
 // Offline support: serve the app shell from cache and refresh it in the background.
 // The Supabase library from the CDN is cached too, so the app opens with no connection.
 // Bump VERSION whenever app files change.
-const VERSION = 'bayit-v5';
+const VERSION = 'bayit-v6';
 const ASSETS = [
   './', './index.html', './styles.css', './config.js', './manifest.webmanifest',
   './js/app.js', './js/store.js', './js/logic.js', './js/categories.js', './js/seed.js', './js/receiptText.js', './js/ocr.js', './js/receiptPdf.js',

@@ -103,6 +103,19 @@ export function createProduct({ name, cat, store, unit }) {
   return db.put('products', { id: db.uid('p'), name: name.trim(), cat: cat || 'שונות', store, codes: [], unit: unit || 'יח׳' });
 }
 
+export function renameProduct(id, { name, cat }) {
+  return db.patch('products', id, { name: name.trim(), cat });
+}
+
+// Removes a product from the catalog and from the list. Past receipts and their prices stay
+// in the history; a later receipt with its barcode will offer it as a new product.
+export function deleteProduct(id) {
+  db.batch(() => {
+    for (const it of db.all('items').filter(i => i.productId === id)) db.remove('items', it.id);
+    db.remove('products', id);
+  });
+}
+
 export function findProducts(q) {
   const t = norm(q);
   if (t.length < 2) return [];
@@ -392,7 +405,7 @@ export function priceTable() {
       table[l.productId] = table[l.productId] || {};
       table[l.productId][r.store] = {
         regular: l.unitPrice, paid: Math.round(paid * 100) / 100, promo: l.discount > 0 ? l.promo : '',
-        date: r.date, perKg: !!l.weight
+        date: r.date, perKg: !!l.weight, receiptName: l.name
       };
     }
   }

@@ -20,6 +20,7 @@ const ui = {
   lastAdded: null,
   listQ: '',
   bulk: null,
+  edit: null,
   shopQ: '',
   finishing: false,
   receipt: { step: 'paste', text: '', error: '', warnings: [], model: null, dec: null, summary: null, showMatched: false },
@@ -54,6 +55,7 @@ const I = {
   up: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>',
   down: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   cart: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h2l2.4 11h10.2L20 8H7"/><circle cx="9" cy="19" r="1.5"/><circle cx="17" cy="19" r="1.5"/></svg>',
+  pencil: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
   spark: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></svg>',
   tabCatalog: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>',
   tabList: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>',
@@ -151,13 +153,32 @@ function addForm() {
   </div>`;
 }
 
+function editRow(p) {
+  const e = ui.edit;
+  return `<div class="card bordered" style="gap:8px">
+    <label class="lbl" for="editName" style="margin:0">שם בקטלוג</label>
+    <input id="editName" class="field" data-in="editName" value="${esc(e.name)}" autocomplete="off">
+    <label class="lbl" for="editCat" style="margin:0">קטגוריה</label>
+    <select id="editCat" class="field" data-in="editCat">${CATS.map(c => `<option ${c === e.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+    <span class="tiny muted">השם המלא מהקבלה נשמר בהשוואת המחירים, גם אם מקצרים כאן.</span>
+    ${e.confirm ? `<div class="banner warn" role="alert" style="flex-wrap:wrap"><span style="flex:1;min-width:200px">למחוק את "${esc(p.name)}" מהקטלוג? הוא יוסר גם מהרשימה. המחירים מקבלות קודמות נשארים.</span>
+        <button class="btn small" style="background:#B0263B;border-color:#B0263B;color:#fff" data-a="editDelete">כן, למחוק</button>
+        <button class="btn small" data-a="editConfirm">לא</button></div>`
+      : `<div class="row-actions"><button class="btn primary" style="flex:1" data-a="editSave" ${e.name.trim() ? '' : 'disabled'}>שמירה</button>
+        <button class="btn" data-a="editCancel">ביטול</button>
+        <button class="btn" style="color:#B0263B" data-a="editConfirm">מחיקה</button></div>`}
+  </div>`;
+}
+
 function catalogRow(p) {
+  if (ui.edit && ui.edit.id === p.id) return editRow(p);
   const item = L.itemForProduct(p.id);
   const right = item
     ? `<div class="stepper"><button data-a="inc" data-id="${p.id}" aria-label="עוד אחד">${I.plus}</button><span>${item.qty}</span><button data-a="dec" data-id="${p.id}" aria-label="אחד פחות">${I.minus}</button></div>`
     : `<button class="add-btn" data-a="inc" data-id="${p.id}" aria-label="הוספת ${esc(p.name)} לרשימה">${I.plus}</button>`;
   return `<div class="row ${item ? 'on' : ''}"><div class="grow"><span class="name">${esc(p.name)}</span>
-    <div class="meta">${storePill(item ? item.store : p.store, 'productStore', p.id)}${p.unit === 'ק״ג' ? '<span>לפי משקל</span>' : ''}</div></div>${right}</div>`;
+    <div class="meta">${storePill(item ? item.store : p.store, 'productStore', p.id)}${p.unit === 'ק״ג' ? '<span>לפי משקל</span>' : ''}
+      <button class="icon-btn plain" style="width:32px;height:32px" data-a="editOpen" data-id="${p.id}" aria-label="עריכת ${esc(p.name)}">${I.pencil}</button></div></div>${right}</div>`;
 }
 
 function renderCatalog() {
@@ -547,7 +568,7 @@ function renderPrices() {
     const known = act.filter(s => val(s) != null);
     const best = known.length >= 2 ? known.reduce((a, s) => val(s) < val(a) ? s : a) : null;
     if (best) compared++;
-    return `<div class="prow" style="${cols}"><span style="display:flex;flex-direction:column;min-width:0"><span style="font-size:14px;font-weight:500">${esc(p.name)}</span><span class="tiny muted">${inList.has(p.id) ? 'ברשימה · ' : ''}${Object.values(t).some(x => x.perKg) ? 'לק״ג' : 'ליחידה'}</span></span>
+    return `<div class="prow" style="${cols}"><span style="display:flex;flex-direction:column;min-width:0"><span style="font-size:14px;font-weight:500">${esc(p.name)}</span>${receiptNames(t, p.name)}<span class="tiny muted">${inList.has(p.id) ? 'ברשימה · ' : ''}${Object.values(t).some(x => x.perKg) ? 'לק״ג' : 'ליחידה'}</span></span>
       ${act.map(s => { const v = val(s); const e = t[s.id]; return `<span class="pcell ${best && best.id === s.id ? 'best' : ''}">${v == null ? '<span class="muted">—</span><span class="t">אין נתון</span>' : `<span>${money(v)}</span><span class="t">${promo && e.promo ? 'מבצע · ' : ''}${fmtDate(e.date)}</span>`}</span>`; }).join('')}</div>`;
   }).join('');
   return `${head('רק מחירים מקבלות שיובאו', 'השוואת מחירים')}
@@ -558,6 +579,13 @@ function renderPrices() {
     ${rows.length ? `<div class="ptable"><div class="prow head" style="${cols}"><span class="muted">מוצר</span>${act.map(s => `<span style="text-align:center;color:${s.color}">${esc(s.name)}</span>`).join('')}</div>${body}</div>` : '<p class="empty">אין עדיין מחירים. הם נאספים מקבלות שמייבאים.</p>'}
     <p class="tiny muted" style="margin:0 4px">כל מחיר מוצג עם תאריך הקבלה שממנה הוא נלקח. מסומן בירוק הזול ביותר, רק כשיש מחיר מלפחות שתי רשתות.${compared ? '' : ''}</p>
   </div>`;
+}
+
+// The product's full names as printed on each chain's receipt, when they differ from the
+// short catalog name ("ספגטי" in the catalog, "ספגטי פרפקטו 500 גרם" on the receipt).
+function receiptNames(t, name) {
+  const names = [...new Set(Object.values(t).map(x => x.receiptName).filter(n => n && n !== name))];
+  return names.length ? `<span class="tiny muted" style="line-height:1.3">בקבלה: ${names.map(esc).join(' / ')}</span>` : '';
 }
 
 // ---------- settings ----------
@@ -748,6 +776,22 @@ const A = {
   },
   dismissLast() { ui.lastAdded = null; },
   catFilter(d) { ui.catFilter = d.cat; },
+  editOpen(d) { const p = db.one('products', d.id); ui.edit = { id: p.id, name: p.name, cat: p.cat || 'שונות', confirm: false }; },
+  editCancel() { ui.edit = null; },
+  editConfirm() { ui.edit.confirm = !ui.edit.confirm; },
+  editSave() {
+    const e = ui.edit;
+    if (!e.name.trim()) return;
+    L.renameProduct(e.id, { name: e.name, cat: e.cat });
+    ui.edit = null;
+    toast('נשמר');
+  },
+  editDelete() {
+    const name = L.productName(ui.edit.id);
+    L.deleteProduct(ui.edit.id);
+    ui.edit = null;
+    toast(`"${name}" נמחק מהקטלוג`);
+  },
   inc(d) { L.addToList(d.id, 1); },
   dec(d) { const it = L.itemForProduct(d.id); if (it) L.setQty(it.id, it.qty - 1); },
   productStore(d) {
@@ -947,6 +991,8 @@ const INPUTS = {
   addName: v => { ui.add.name = v; },
   receiptText: v => { ui.receipt.text = v; ui.receipt.error = ''; },
   bulkText: v => { ui.bulk.text = v; },
+  editName: v => { ui.edit.name = v; },
+  editCat: v => { ui.edit.cat = v; },
   bulkInclude: (v, el) => { ui.bulk.rows[el.dataset.k].include = el.checked; },
   bulkChoice: (v, el) => {
     const r = ui.bulk.rows[el.dataset.k];
