@@ -121,7 +121,9 @@ function addForm() {
   const cat = a.cat || guessed;
   const suggested = L.defaultStoreFor(cat);
   const target = a.target || suggested;
-  const existing = L.findProducts(name).slice(0, 3);
+  // Same product under another name too: plural, spelling, or another pasta type.
+  const existing = [...new Map(L.findProducts(name).concat(L.matchProducts(name).map(x => x.p)).map(p => [p.id, p])).values()].slice(0, 3);
+  const nearlySame = L.matchProducts(name).some(x => x.score >= 0.85);
   const showPicker = !!name && (a.picking || !cat);
   const canAdd = !!(name && cat);
   const targets = L.activeStores().map(s => ({ id: s.id, label: s.name, color: s.color })).concat([{ id: 'none', label: 'רק לקטלוג', color: '#1B2420' }]);
@@ -129,7 +131,7 @@ function addForm() {
     <label class="lbl" for="addName" style="margin:0">מה להוסיף? רק השם, את השאר האפליקציה משלימה</label>
     <input id="addName" class="field" data-in="addName" value="${esc(a.name)}" placeholder="למשל: חומץ בלסמי" autocomplete="off">
     ${!a.name ? `<button class="btn link small" style="align-self:flex-start;padding:0" data-a="bulkOpen">יש רשימה כתובה? הדבקת כמה מוצרים בבת אחת</button>` : ''}
-    ${existing.length ? `<div style="display:flex;flex-direction:column;gap:6px"><span class="tiny muted">כבר יש בקטלוג</span>
+    ${existing.length ? `<div style="display:flex;flex-direction:column;gap:6px"><span class="${nearlySame ? 'small' : 'tiny muted'}" style="${nearlySame ? 'color:var(--warn);font-weight:600' : ''}">${nearlySame ? 'נראה שזה כבר בקטלוג. כדאי להוסיף אותו במקום ליצור חדש:' : 'כבר יש בקטלוג'}</span>
       ${existing.map(p => { const inList = !!L.itemForProduct(p.id); return `<button class="btn" style="justify-content:space-between;background:#F7F8F6" data-a="addExisting" data-id="${p.id}"><span>${esc(p.name)} <span class="tiny muted">· ${esc(p.cat)}</span></span><span style="color:var(--green);font-weight:600">${inList ? 'כבר ברשימה' : '+ לרשימה'}</span></button>`; }).join('')}</div>` : ''}
     ${name ? `<div class="card soft" style="padding:10px 12px">
       <div style="display:flex;align-items:center;gap:10px">
@@ -558,11 +560,11 @@ function renderPrices() {
   const inList = new Set(L.listItems().map(i => i.productId));
   const rows = Object.keys(table).map(id => db.one('products', id)).filter(Boolean)
     .filter(p => !q || p.name.includes(q))
-    .sort((a, b) => (inList.has(b.id) - inList.has(a.id)) || a.name.localeCompare(b.name, 'he'));
+    .sort((a, b) => a.name.localeCompare(b.name, 'he'));
   const storesWithData = act.filter(s => Object.values(table).some(t => t[s.id]));
   let compared = 0;
   const cols = `grid-template-columns:minmax(0,1fr) repeat(${act.length}, 70px)`;
-  const body = rows.map(p => {
+  const priceRow = p => {
     const t = table[p.id];
     const val = s => t[s.id] ? (promo ? t[s.id].paid : t[s.id].regular) : null;
     const known = act.filter(s => val(s) != null);
@@ -570,6 +572,11 @@ function renderPrices() {
     if (best) compared++;
     return `<div class="prow" style="${cols}"><span style="display:flex;flex-direction:column;min-width:0"><span style="font-size:14px;font-weight:500">${esc(p.name)}</span>${receiptNames(t, p.name)}<span class="tiny muted">${inList.has(p.id) ? 'ברשימה · ' : ''}${Object.values(t).some(x => x.perKg) ? 'לק״ג' : 'ליחידה'}</span></span>
       ${act.map(s => { const v = val(s); const e = t[s.id]; return `<span class="pcell ${best && best.id === s.id ? 'best' : ''}">${v == null ? '<span class="muted">—</span><span class="t">אין נתון</span>' : `<span>${money(v)}</span><span class="t">${promo && e.promo ? 'מבצע · ' : ''}${fmtDate(e.date)}</span>`}</span>`; }).join('')}</div>`;
+  };
+  // Grouped by category, in the catalog's order.
+  const body = CATS.map(c => {
+    const inCat = rows.filter(p => (p.cat || 'שונות') === c);
+    return inCat.length ? `<div class="prow" style="grid-template-columns:1fr;background:#F7F8F6;padding:7px 12px"><span class="small" style="font-weight:600">${esc(c)}</span></div>${inCat.map(priceRow).join('')}` : '';
   }).join('');
   return `${head('רק מחירים מקבלות שיובאו', 'השוואת מחירים')}
   <div class="wrap">

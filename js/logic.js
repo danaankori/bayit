@@ -146,19 +146,43 @@ function looseKey(s) {
   return norm(s).replace(/[-–־]/g, '').replace(/[.,()\/]/g, ' ').replace(/[וי]/g, '').replace(/\s+/g, ' ').trim();
 }
 
+// Words that name the same thing for shopping purposes.
+const SAME_AS = {
+  'ספגטי': 'פסטה', 'פנה': 'פסטה', 'מקרוני': 'פסטה', 'פוזילי': 'פסטה', 'פרפלה': 'פסטה', 'ספירלות': 'פסטה', 'קונכיות': 'פסטה'
+};
+// Sizes and units say nothing about what the product is.
+const NOISE = /^(\d+([.,]\d+)?%?|גר|גרם|ג|קג|ק"ג|קילו|ליטר|ל|מל|מ"ל|יח|יחידות|מארז|ארוז)$/;
+const FINALS = { 'ך': 'כ', 'ם': 'מ', 'ן': 'נ', 'ף': 'פ', 'ץ': 'צ' };
+
+// One word reduced to a comparable stem: final letters, plural/feminine endings
+// (מלפפונים = מלפפון, עגבניות = עגבניה) and ו/י spelling differences.
+function stem(word) {
+  let w = SAME_AS[word] || word;
+  w = w.replace(/[ךםןףץ]/g, c => FINALS[c]);
+  if (w.length > 4 && /(ימ|ות)$/.test(w)) w = w.slice(0, -2);
+  else if (w.length > 3 && /ה$/.test(w)) w = w.slice(0, -1);
+  return w.replace(/[וי]/g, '');
+}
+
+function matchWords(s) {
+  return norm(s).replace(/[-–־]/g, '').replace(/[.,()\/*]/g, ' ').split(' ')
+    // Two-letter words ("בר" in "פתי בר") are too short to identify a product.
+    .filter(w => w.length >= 3 && !NOISE.test(w)).map(stem).filter(Boolean);
+}
+
 function matchScore(query, name) {
-  const a = looseKey(query);
-  const b = looseKey(name);
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  const qa = a.split(' ');
-  const qb = b.split(' ');
-  // Words match when equal, or when the shorter one (3+ letters) starts the longer one.
-  const same = (x, y) => x === y || (Math.min(x.length, y.length) >= 3 && (y.startsWith(x) || x.startsWith(y)));
+  const qa = matchWords(query);
+  const qb = matchWords(name);
+  if (!qa.length || !qb.length) return 0;
+  if (qa.join(' ') === qb.join(' ')) return 1;
+  // Words match when equal, or when the shorter one (4+ letters) starts the longer one
+  // (3 would make שמן and שמנת the same).
+  const same = (x, y) => x === y || (Math.min(x.length, y.length) >= 4 && (y.startsWith(x) || x.startsWith(y)));
   const hit = (x, list) => list.some(y => same(x, y));
   const fromQuery = qa.filter(x => hit(x, qb)).length / qa.length;
   const fromName = qb.filter(y => hit(y, qa)).length / qb.length;
-  return fromQuery * 0.7 + fromName * 0.3;
+  // A short catalog name fully contained in a longer one ("ספגטי" in "ספגטי פרפקטו 500 גרם").
+  return Math.max(fromQuery * 0.7 + fromName * 0.3, fromName * 0.6);
 }
 
 // Best catalog products for a written name, best first.
