@@ -1,0 +1,24 @@
+# Keeps the free Supabase project from pausing: a tiny request every 3 days.
+# Needs two repository secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_URL       e.g. https://xxxx.supabase.co
+#   SUPABASE_ANON_KEY  the anon public key
+name: Keep Supabase awake
+
+on:
+  schedule:
+    - cron: '17 5 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the database
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/ping" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json" -d '{}')
+          echo "Supabase answered $code"
+          test "$code" = "200"
